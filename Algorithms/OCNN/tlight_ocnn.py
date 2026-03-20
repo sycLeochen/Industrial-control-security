@@ -11,14 +11,19 @@ from sklearn import utils
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
 import tensorflow as tf
+# 讓 TensorFlow 2.x 相容舊的 TF1 程式碼（Session / placeholder / reset_default_graph 等）
+if hasattr(tf, "compat") and hasattr(tf.compat, "v1"):
+    tf = tf.compat.v1
+    tf.disable_v2_behavior()
 from itertools import zip_longest
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.decomposition import PCA
 from sklearn.pipeline import Pipeline
+import pickle
 
 
 df_ocnn_scores = {}
-decision_scorePath = "../Dataset/"
+decision_scorePath = "../../Dataset/"
 
 def write_decisionScores2Csv(path, filename, positiveScores, negativeScores):
     newfilePath = path + filename
@@ -155,21 +160,77 @@ def tf_OneClass_NN_Relu(data_train, data_test):
 
 
 # =========== Main ==================
-# Load preprocessed Dataset
-path = ../Dataset/train_data/
-train_df = pd.read_csv(path + "train_data.csv", index_col=0)  # train data
-test_df = pd.read_csv(path + "test_data_X.csv")  # modify (X) as required - there are 5 different test sets in the dataset directory
+# 只做「訓練並存模型」：評估/畫圖由 Dataset/plot_results.py 載入模型完成
+train_path = "../../Dataset/train_data/train_data/"
 
-# Normalize data
-scaler = MinMaxScaler()
+
+
+# 訓練資料：只有正常樣本
+train_df = pd.read_csv(train_path + "train_dataset.csv", index_col=0)
+
+# Normalize（scaler 只用訓練集 fit）
 trans_pipeline = Pipeline([("scaler", MinMaxScaler())])
+train_data = trans_pipeline.fit_transform(train_df).astype(np.float32)
 
-#train_data = scaler.fit_transform(train)
-train_data = trans_pipeline.fit_transform(train_df)
-test_data = trans_pipeline.transform(test_df.iloc[:,:-1])
 
-ocnn_anomaly_scores = tf_OneClass_NN_Relu(train_data, test_data)
-df_ocnn_scores["OCNN_Train"] = ocnn_anomaly_scores[0]
-df_ocnn_scores["OCNN_Test"] = ocnn_anomaly_scores[1]
 
-print("Finished!!")
+# ---- 建圖、訓練一次、存 checkpoint + r* ----
+tf.reset_default_graph()
+RANDOM_SEED = 42
+tf.set_random_seed(RANDOM_SEED)
+
+x_size = train_data.shape[1]
+h_size = 32
+y_size = 1
+nu = 0.04
+
+X = tf.placeholder(tf.float32, shape=[None, x_size], name="X")
+r_ph = tf.placeholder(tf.float32, shape=(), name="r_ph")
+
+def init_weights(shape, name):
+    weights = tf.random_normal(shape, mean=0, stddev=0.00001)
+    return tf.Variable(weights, name=name)
+
+def relu(x):
+    return x
+
+g = lambda x: relu(x)
+
+def nnScore(X, w, V, g):
+    return tf.matmul(g(tf.matmul(X, w)), V)
+
+def ocnn_obj(X, nu, w, V, g, r):
+    term1 = 0.5 * tf.reduce_sum(w ** 2)
+    term2 = 0.5 * tf.reduce_sum(V ** 2)
+    term3 = 1 / nu * tf.reduce_mean(relu(r - nnScore(X, w, V, g)))
+    term4 = -r
+    return term1 + term2 + term3 + term4
+
+w_1 = init_weights((x_size, h_size), name="w_1")
+w_2 = init_weights((h_size, y_size), name="w_2")
+
+score_op = nnScore(X, w_1, w_2, g)
+cost = ocnn_obj(X, nu, w_1, w_2, g, r_ph)
+updates = tf.train.GradientDescentOptimizer(0.0001).minimize(cost)
+
+
+
+sess = tf.Session()
+sess.run(tf.global_variables_initializer())
+
+rvalue = 0.1
+for epoch in range(100):
+    _, loss_val = sess.run([updates, cost], feed_dict={X: train_data, r_ph: rvalue})
+    r_scores = sess.run(score_op, feed_dict={X: train_data})
+    rvalue = float(np.percentile(r_scores, q=100 * nu))
+    print("Epoch = %3d | loss = %.6f | r = %.6f" % (epoch + 1, loss_val, rvalue))
+
+rstar = float(rvalue)
+
+sess.close()
+
+print("\n===== Training Summary =====")
+print("Final r* = %.6f" % rstar)
+print("nu = %.4f" % nu)
+print("Epochs = 100, lr = 0.0001, h_size = %d" % h_size)
+print("Finished training (model NOT saved).")
