@@ -1,0 +1,2 @@
+model_checkpoint_path: "/workspace/project/TLIGHT-SYSTEM-main/Algorithms/OCNN/../../training_result/Model storage space/Model 5/ocnn.ckpt"
+all_model_checkpoint_paths: "/workspace/project/TLIGHT-SYSTEM-main/Algorithms/OCNN/../../training_result/Model storage space/Model 5/ocnn.ckpt"
